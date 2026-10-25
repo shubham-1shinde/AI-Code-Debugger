@@ -15,26 +15,65 @@ export interface DebugResponse {
     detail?: string;
 }
 
-const BACKEND_URL = "http://127.0.0.1:8000";
+const BACKEND_URL = "https://ai-production-debugger.onrender.com";
 
-export async function sendDebugRequest(request: DebugRequest): Promise<DebugResponse> {
 
-    const response = await fetch(`${BACKEND_URL}/api/debug`,
-        {
-            method: "POST",
-            headers: {"Content-Type":"application/json"},
-            body:JSON.stringify(request)
-        }
+export async function sendDebugRequest(
+  request: DebugRequest
+): Promise<DebugResponse> {
+  try {
+    const response = await fetch(
+      `${BACKEND_URL}/api/debug`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(request),
+        signal: AbortSignal.timeout(120_000),
+      }
     );
 
-    const data = await response.json();
+    const text = await response.text();
+
+    let data: DebugResponse;
+
+    try {
+      data = JSON.parse(text) as DebugResponse;
+    } catch {
+      throw new Error(
+        `Backend returned invalid JSON (HTTP ${response.status}): ${
+          text.slice(0, 300) || "(empty response)"
+        }`
+      );
+    }
 
     if (!response.ok) {
-        throw new Error(data.detail || "Backend request failed.");
+      throw new Error(
+        data.detail || `Backend returned HTTP ${response.status}`
+      );
     }
 
     return data;
+  } catch (error) {
+    console.error("[AI Debugger] Request failed:", error);
+
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new Error("Request timed out after 120 seconds.");
+    }
+
+    if (error instanceof TypeError) {
+      throw new Error(
+        `Cannot connect to the AI Debugger backend: ${error.message}. ` +
+        "Check Render logs and the backend health endpoint."
+      );
+    }
+
+    throw error;
+  }
 }
+
 
 export interface DebugRequest {
     repo: string;

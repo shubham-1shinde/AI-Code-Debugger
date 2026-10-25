@@ -1,8 +1,8 @@
-
+import time
+import logging
 import re
 from pathlib import Path
-
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
 from qdrant_client import QdrantClient
@@ -19,7 +19,7 @@ QDRANT_PATH = str(
     Path(__file__).resolve().parents[2] / "qdrant_data"
 )
 
-EMBEDDING_SIZE = 384
+EMBEDDING_SIZE = 768
 
 # Load the embedding model only when it is first needed.
 _embeddings = None
@@ -37,8 +37,9 @@ def get_embeddings():
     if _embeddings is None:
         print("Loading Hugging Face embedding model...")
 
-        _embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        _embeddings = GoogleGenerativeAIEmbeddings(
+            model="gemini-embedding-2",
+            output_dimensionality=EMBEDDING_SIZE,
         )
 
         print("Embedding model loaded successfully.")
@@ -126,21 +127,53 @@ def create_store_from_documents(documents, repo: str):
     print("Qdrant vector store created successfully.")
 
 
+logger = logging.getLogger(__name__)
+
 def add_documents(documents, repo: str):
-    """Add chunks to the collection belonging to a repository."""
     if not documents:
         return
 
-    if not collection_exists(repo):
-        create_store_from_documents(documents, repo)
-        return
-
     vector_store = get_vector_store(repo)
+    batch_size = 5
+    max_attempts = 4
 
-    vector_store.add_documents(documents=documents)
+    for start in range(0, len(documents), batch_size):
+        batch = documents[start:start + batch_size]
 
-    print(f"Qdrant update completed for: {repo}")
+        for attempt in range(max_attempts):
+            try:
+                vector_store.add_documents(documents=batch)
+                logger.info(
+                    "Embedded batch %s for %s",
+                    start // batch_size + 1,
+                    repo,
+                )
+                break
 
+            except Exception as exc:
+                message = str(exc)
+                is_rate_limit = (
+                    "429" in message
+                    or "RESOURCE_EXHAUSTED" in message
+                )
+
+                if not is_rate_limit or attempt == max_attempts - 1:
+                    raise
+
+                # Back off: 30, 60, then 120 seconds.
+                delay = 30 * (2 ** attempt)
+                logger.warning(
+                    "Gemini rate limit reached. "
+                    "Retrying batch in %s seconds.",
+                    delay,
+                )
+                time.sleep(delay)
+
+        # Small pause between successful batches.
+        if start + batch_size < len(documents):
+            time.sleep(2)
+
+    logger.info("Qdrant update completed for %s", repo)
 
 def delete_file_vectors(file_path: str, repo: str):
     """Delete all vectors associated with a specific file."""
