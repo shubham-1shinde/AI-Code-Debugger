@@ -28,7 +28,8 @@ export interface DebugRequest {
 }
 
 const BACKEND_URL = "https://ai-production-debugger.onrender.com";
-const TIMEOUT_MS = 360_000; // 6 minutes
+//const BACKEND_URL = "http://127.0.0.1:8000";
+const TIMEOUT_MS = 600_000; // 6 minutes
 
 export async function sendDebugRequest(
     request: DebugRequest
