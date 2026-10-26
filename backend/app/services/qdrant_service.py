@@ -10,9 +10,6 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
     VectorParams,
-    Filter,
-    FieldCondition,
-    MatchValue,
     PointIdsList,
 )
 
@@ -21,7 +18,6 @@ logger = logging.getLogger(__name__)
 QDRANT_PATH = str(
     Path(__file__).resolve().parents[2] / "qdrant_data"
 )
-
 EMBEDDING_SIZE = 768
 
 _embeddings = None
@@ -31,81 +27,66 @@ client = QdrantClient(path=QDRANT_PATH)
 
 
 def get_embeddings():
-    """Initialize the Gemini embedding model lazily."""
     global _embeddings
 
     if _embeddings is None:
-        logger.info("Loading Gemini embedding model")
-
+        logger.info("Initializing Gemini embedding model")
         _embeddings = GoogleGenerativeAIEmbeddings(
             model="gemini-embedding-2",
             output_dimensionality=EMBEDDING_SIZE,
         )
 
-        logger.info("Gemini embedding model loaded")
-
     return _embeddings
 
 
 def normalize_file_path(path: str) -> str:
-    """Normalize Windows and Linux file paths."""
-    normalized = str(path or "").replace("\\", "/").strip()
-    normalized = str(PurePosixPath(normalized))
+    path = str(path or "").replace("\\", "/").strip()
+    path = str(PurePosixPath(path))
 
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
+    while path.startswith("./"):
+        path = path[2:]
 
-    return normalized.strip("/")
+    return path.strip("/")
 
 
 def get_collection_name(repo: str) -> str:
-    """Generate a stable collection name for a repository."""
     safe_repo = re.sub(r"[^a-zA-Z0-9_]", "_", repo)
     return f"repo_{safe_repo.lower()}"
 
 
 def collection_exists(repo: str) -> bool:
-    """Check whether a repository collection exists."""
-    collection_name = get_collection_name(repo)
-
+    name = get_collection_name(repo)
     return any(
-        collection.name == collection_name
-        for collection in client.get_collections().collections
+        item.name == name
+        for item in client.get_collections().collections
     )
 
 
 def create_collection(repo: str):
-    """Create a repository collection if it does not exist."""
-    collection_name = get_collection_name(repo)
+    name = get_collection_name(repo)
 
     if collection_exists(repo):
         return
 
-    logger.info("Creating Qdrant collection: %s", collection_name)
+    logger.info("Creating Qdrant collection: %s", name)
 
     client.create_collection(
-        collection_name=collection_name,
+        collection_name=name,
         vectors_config=VectorParams(
             size=EMBEDDING_SIZE,
             distance=Distance.COSINE,
         ),
     )
 
-    logger.info("Qdrant collection created: %s", collection_name)
-
 
 def get_vector_store(repo: str):
-    """Get a vector store, creating its collection when necessary."""
-    collection_name = get_collection_name(repo)
-
+    """Create the collection before constructing the vector store."""
     if repo not in _vector_stores:
-        # Important: indexing calls this function before inserting
-        # the first batch, so the collection must be created here.
         create_collection(repo)
 
         _vector_stores[repo] = QdrantVectorStore(
             client=client,
-            collection_name=collection_name,
+            collection_name=get_collection_name(repo),
             embedding=get_embeddings(),
         )
 
@@ -113,12 +94,10 @@ def get_vector_store(repo: str):
 
 
 def create_store_from_documents(documents, repo: str):
-    """Create a vector store and insert documents."""
     if not documents:
         return
 
-    vector_store = get_vector_store(repo)
-    vector_store.add_documents(documents=documents)
+    get_vector_store(repo).add_documents(documents=documents)
 
     logger.info(
         "Stored %s documents in %s",
@@ -127,18 +106,39 @@ def create_store_from_documents(documents, repo: str):
     )
 
 
+def _is_transient_error(exc: Exception) -> bool:
+    message = str(exc).upper()
+
+    return any(
+        marker in message
+        for marker in (
+            "429",
+            "503",
+            "UNAVAILABLE",
+            "RESOURCE_EXHAUSTED",
+            "500",
+            "502",
+            "504",
+            "INTERNAL",
+            "DEADLINE_EXCEEDED",
+            "TIMEOUT",
+        )
+    )
+
+
 def add_documents(documents, repo: str):
-    """Insert documents in batches with rate-limit retries."""
+    """Insert documents with retries for transient embedding failures."""
     if not documents:
         return
 
     vector_store = get_vector_store(repo)
 
     batch_size = 5
-    max_attempts = 4
+    max_attempts = 5
 
     for start in range(0, len(documents), batch_size):
         batch = documents[start:start + batch_size]
+        batch_number = start // batch_size + 1
 
         for attempt in range(max_attempts):
             try:
@@ -146,44 +146,46 @@ def add_documents(documents, repo: str):
 
                 logger.info(
                     "Embedded batch %s for %s",
-                    start // batch_size + 1,
+                    batch_number,
                     repo,
                 )
                 break
 
             except Exception as exc:
-                message = str(exc)
-                is_rate_limit = (
-                    "429" in message
-                    or "RESOURCE_EXHAUSTED" in message
-                )
-
-                if not is_rate_limit or attempt == max_attempts - 1:
+                if (
+                    not _is_transient_error(exc)
+                    or attempt == max_attempts - 1
+                ):
                     logger.exception(
-                        "Failed to add document batch for %s",
+                        "Embedding batch %s failed for %s",
+                        batch_number,
                         repo,
                     )
                     raise
 
-                delay = 30 * (2 ** attempt)
+                delay = min(15 * (2 ** attempt), 120)
 
                 logger.warning(
-                    "Embedding rate limit for %s. "
-                    "Retrying in %s seconds.",
+                    "Temporary Gemini API failure. "
+                    "Repository=%s, batch=%s, attempt=%s/%s, "
+                    "retry_in=%ss, error=%s",
                     repo,
+                    batch_number,
+                    attempt + 1,
+                    max_attempts,
                     delay,
+                    str(exc)[:300],
                 )
 
                 time.sleep(delay)
 
         if start + batch_size < len(documents):
-            time.sleep(2)
+            time.sleep(3)
 
     logger.info("Qdrant update completed for %s", repo)
 
 
 def _get_stored_path(payload: dict) -> str:
-    """Extract a file path from supported payload layouts."""
     metadata = payload.get("metadata") or {}
 
     if not isinstance(metadata, dict):
@@ -200,36 +202,32 @@ def _get_stored_path(payload: dict) -> str:
 
 
 def _get_document_metadata(payload: dict) -> dict:
-    """Extract document metadata from a Qdrant payload."""
     metadata = payload.get("metadata") or {}
 
     if not isinstance(metadata, dict):
         metadata = {}
 
     metadata = dict(metadata)
-    stored_path = _get_stored_path(payload)
+    path = _get_stored_path(payload)
 
-    if stored_path and not metadata.get("path"):
-        metadata["path"] = stored_path
+    if path and not metadata.get("path"):
+        metadata["path"] = path
 
     return metadata
 
 
 def delete_file_vectors(file_path: str, repo: str):
-    """Delete vectors associated with a file."""
     if not collection_exists(repo):
         return
 
-    collection_name = get_collection_name(repo)
-    target_path = normalize_file_path(file_path)
-    ids_to_delete = []
+    name = get_collection_name(repo)
+    target = normalize_file_path(file_path)
+    ids = []
     offset = None
 
-    # Scan payloads to handle path separators and metadata layouts
-    # consistently. This also avoids relying on one exact filter key.
     while True:
         points, next_offset = client.scroll(
-            collection_name=collection_name,
+            collection_name=name,
             limit=256,
             offset=offset,
             with_payload=True,
@@ -238,25 +236,25 @@ def delete_file_vectors(file_path: str, repo: str):
 
         for point in points:
             payload = point.payload or {}
-            stored_path = normalize_file_path(
+            stored = normalize_file_path(
                 _get_stored_path(payload)
             )
 
-            if (
-                stored_path == target_path
-                or stored_path.endswith("/" + target_path)
+            if stored and (
+                stored == target
+                or stored.endswith("/" + target)
             ):
-                ids_to_delete.append(point.id)
+                ids.append(point.id)
 
         if next_offset is None:
             break
 
         offset = next_offset
 
-    if ids_to_delete:
+    if ids:
         client.delete(
-            collection_name=collection_name,
-            points_selector=PointIdsList(points=ids_to_delete),
+            collection_name=name,
+            points_selector=PointIdsList(points=ids),
             wait=True,
         )
 
@@ -264,9 +262,9 @@ def delete_file_vectors(file_path: str, repo: str):
 
     logger.info(
         "Deleted %s vectors for %s from %s",
-        len(ids_to_delete),
+        len(ids),
         file_path,
-        collection_name,
+        name,
     )
 
 
@@ -275,32 +273,17 @@ def get_documents_by_file(
     repo: str,
     limit: int = 100,
 ):
-    """Retrieve chunks matching a normalized file path."""
-    if not file_path:
+    if not file_path or not collection_exists(repo):
         return []
 
-    if not collection_exists(repo):
-        logger.warning(
-            "Exact retrieval skipped: collection missing for %s",
-            repo,
-        )
-        return []
-
-    collection_name = get_collection_name(repo)
-    requested_path = normalize_file_path(file_path)
-
-    logger.info(
-        "Exact retrieval: collection=%s, file=%s",
-        collection_name,
-        requested_path,
-    )
-
+    name = get_collection_name(repo)
+    requested = normalize_file_path(file_path)
     documents = []
     offset = None
 
     while True:
         points, next_offset = client.scroll(
-            collection_name=collection_name,
+            collection_name=name,
             limit=256,
             offset=offset,
             with_payload=True,
@@ -309,24 +292,21 @@ def get_documents_by_file(
 
         for point in points:
             payload = point.payload or {}
-
-            stored_path = normalize_file_path(
+            stored = normalize_file_path(
                 _get_stored_path(payload)
             )
 
-            matches = (
-                stored_path == requested_path
-                or stored_path.endswith("/" + requested_path)
-            )
-
-            if not matches:
+            if not stored or not (
+                stored == requested
+                or stored.endswith("/" + requested)
+            ):
                 continue
 
             content = payload.get("page_content", "")
 
             if not content:
                 logger.warning(
-                    "Matching path has no page_content. "
+                    "Matched file but page_content is missing. "
                     "Payload keys: %s",
                     list(payload.keys()),
                 )
@@ -348,19 +328,16 @@ def get_documents_by_file(
         offset = next_offset
 
     logger.info(
-        "Exact file retrieval found %s chunks for %s",
+        "Exact retrieval found %s chunks for %s",
         len(documents),
-        requested_path,
+        requested,
     )
 
     return documents
 
 
 def get_retriever(repo: str, k: int = 8):
-    """Get a semantic retriever for an indexed repository."""
-    vector_store = get_vector_store(repo)
-
-    return vector_store.as_retriever(
+    return get_vector_store(repo).as_retriever(
         search_kwargs={"k": k}
     )
 
@@ -370,33 +347,21 @@ def get_semantic_documents(
     repo: str,
     k: int = 8,
 ):
-    """Retrieve semantically relevant repository chunks."""
-    if not query:
+    if not query or not collection_exists(repo):
         return []
 
-    if not collection_exists(repo):
-        logger.warning(
-            "Semantic retrieval skipped: collection missing for %s",
-            repo,
-        )
-        return []
-
-    collection_name = get_collection_name(repo)
+    name = get_collection_name(repo)
 
     try:
-        info = client.get_collection(collection_name)
+        info = client.get_collection(name)
 
         logger.info(
             "Semantic search collection=%s, points_count=%s",
-            collection_name,
+            name,
             info.points_count,
         )
 
         if not info.points_count:
-            logger.warning(
-                "Collection %s is empty",
-                collection_name,
-            )
             return []
 
         documents = get_retriever(repo, k).invoke(query)
@@ -417,7 +382,6 @@ def get_semantic_documents(
 
 
 def close_qdrant():
-    """Close Qdrant and clear cached objects."""
     global _embeddings
 
     try:
