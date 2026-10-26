@@ -140,12 +140,13 @@ DIAGNOSTICS:
         "repo":
             repo,
     }
-
+    
+#model="gemini-3.8-flash",
 @lru_cache(maxsize=1)
 def get_main_chain():
 
     llm = ChatGoogleGenerativeAI(
-        model="gemini-3.8-flash",
+        model="gemini-2.5-flash",
         temperature=0,
         api_key=os.getenv(
             "GOOGLE_API_KEY"

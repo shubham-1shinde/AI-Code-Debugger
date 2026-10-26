@@ -25,14 +25,14 @@ _vector_stores = {}
 
 client = QdrantClient(path=QDRANT_PATH)
 
-
+#model="gemini-embedding-2",
 def get_embeddings():
     global _embeddings
 
     if _embeddings is None:
         logger.info("Initializing Gemini embedding model")
         _embeddings = GoogleGenerativeAIEmbeddings(
-            model="gemini-embedding-2",
+            model="gemini-embedding-001",
             output_dimensionality=EMBEDDING_SIZE,
         )
 
