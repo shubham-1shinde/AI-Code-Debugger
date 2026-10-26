@@ -2,7 +2,8 @@
   "name": "ai-code-debugger",
   "displayName": "AI Code Debugger",
   "description": "AI-powered code debugging assistant for VS Code that analyzes errors using repository context and suggests fixes.",
-  "version": "0.0.2",
+  "version": "0.0.3",
+  "icon": "images/icon.png",
   "publisher": "shubham1shinde",
   "license": "MIT",
   "repository": {
