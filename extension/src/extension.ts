@@ -7,7 +7,7 @@ export function activate(context: vscode.ExtensionContext) {
     startTerminalMonitor(context);
 
     const debugCommand = vscode.commands.registerCommand(
-        "aiProductionDebugger.debug",
+        "aiCodeDebugger.debug",
         runDebugCommand
     );
 

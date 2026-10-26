@@ -1,43 +1,65 @@
 {
-    "name": "ai-production-debugger",
-    "displayName": "AI Production Debugger",
-    "description": "AI-powered production debugging assistant for VS Code",
-    "version": "0.0.1",
-    "publisher": "ai-debugger-team",
-    "engines": {
-        "vscode": "^1.85.0"
-    },
-    "categories": [
-        "Other"
+  "name": "ai-code-debugger",
+  "displayName": "AI Code Debugger",
+  "description": "AI-powered code debugging assistant for VS Code that analyzes errors using repository context and suggests fixes.",
+  "version": "0.0.2",
+  "publisher": "shubham1shinde",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shubham-1shinde/AI-Code-Debugger.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shubham-1shinde/AI-Code-Debugger/issues"
+  },
+  "homepage": "https://github.com/shubham-1shinde/AI-Code-Debugger#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "AI",
+    "debugger",
+    "code debugging",
+    "error analysis",
+    "developer tools",
+    "LLM",
+    "RAG",
+    "AI-powered debugging",
+    "VS Code extension",
+    "AI debugging assistant",
+    "AI debugger extension"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "aiCodeDebugger.debug",
+        "title": "AI Code Debugger: Debug"
+      }
     ],
-    "activationEvents": [
-        "onStartupFinished"
-    ],
-    "main": "./dist/extension.js",
-    "contributes": {
-        "commands": [
-            {
-                "command": "aiProductionDebugger.debug",
-                "title": "AI Production Debugger: Debug"
-            }
-        ],
-        "menus": {
-            "editor/title": [
-                {
-                    "command": "aiProductionDebugger.debug",
-                    "group": "navigation"
-                }
-            ]
+    "menus": {
+      "editor/title": [
+        {
+          "command": "aiCodeDebugger.debug",
+          "group": "navigation"
         }
-    },
-    "scripts": {
-        "compile": "tsc",
-        "watch": "tsc --watch"
-    },
-    "devDependencies": {
-        "@types/node": "^26.5.1",
-        "@types/vscode": "^1.85.0",
-        "esbuild": "^0.25.0",
-        "typescript": "^5.0.0"
+      ]
     }
+  },
+  "scripts": {
+    "compile": "tsc",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.0.0"
+  }
 }

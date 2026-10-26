@@ -15,7 +15,7 @@ logging.basicConfig(
 
 
 app = FastAPI(
-    title="AI Production Debugger",
+    title="AI Code Debugger",
     version="1.0.0",
 )
 
@@ -26,5 +26,5 @@ app.include_router(router, prefix="/api")
 def health():
     return {
         "status": "ok",
-        "service": "AI Production Debugger",
+        "service": "AI Code Debugger",
     }

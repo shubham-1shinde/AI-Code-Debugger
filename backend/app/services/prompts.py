@@ -2,7 +2,7 @@ from langchain_core.prompts import PromptTemplate
 
 prompt = PromptTemplate(
     template="""
-You are a production debugging AI.
+You are a code debugging AI.
 
 Analyze the software error using the repository code
 and debugging information provided below.

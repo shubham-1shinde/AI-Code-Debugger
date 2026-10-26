@@ -12,7 +12,7 @@ export async function runDebugCommand() {
         await vscode.window.withProgress(
             {
                 location: vscode.ProgressLocation.Notification,
-                title: "AI Production Debugger",
+                title: "AI Code Debugger",
                 cancellable: false
             },
             async progress => {
@@ -476,7 +476,7 @@ function showDebugResult(result: DebugResult) {
 
             <div>
                 <div class="title">
-                    AI Production Debugger
+                    AI Code Debugger
                 </div>
                 <div class="subtitle">
                     AI-powered root cause analysis
