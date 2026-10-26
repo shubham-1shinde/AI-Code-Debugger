@@ -13,6 +13,7 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
+    PointIdsList,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ client = QdrantClient(path=QDRANT_PATH)
 
 
 def get_embeddings():
-    """Initialize the embedding model lazily."""
+    """Initialize the Gemini embedding model lazily."""
     global _embeddings
 
     if _embeddings is None:
@@ -47,7 +48,7 @@ def get_embeddings():
 
 
 def normalize_file_path(path: str) -> str:
-    """Normalize Windows/Linux separators and relative paths."""
+    """Normalize Windows and Linux file paths."""
     normalized = str(path or "").replace("\\", "/").strip()
     normalized = str(PurePosixPath(normalized))
 
@@ -64,7 +65,7 @@ def get_collection_name(repo: str) -> str:
 
 
 def collection_exists(repo: str) -> bool:
-    """Check whether the repository collection exists."""
+    """Check whether a repository collection exists."""
     collection_name = get_collection_name(repo)
 
     return any(
@@ -74,7 +75,7 @@ def collection_exists(repo: str) -> bool:
 
 
 def create_collection(repo: str):
-    """Create the collection only when it does not exist."""
+    """Create a repository collection if it does not exist."""
     collection_name = get_collection_name(repo)
 
     if collection_exists(repo):
@@ -94,15 +95,13 @@ def create_collection(repo: str):
 
 
 def get_vector_store(repo: str):
-    """Get a cached vector store for a repository."""
-    if repo not in _vector_stores:
-        if not collection_exists(repo):
-            raise RuntimeError(
-                f"Qdrant collection does not exist for {repo}. "
-                "Index the repository before retrieving documents."
-            )
+    """Get a vector store, creating its collection when necessary."""
+    collection_name = get_collection_name(repo)
 
-        collection_name = get_collection_name(repo)
+    if repo not in _vector_stores:
+        # Important: indexing calls this function before inserting
+        # the first batch, so the collection must be created here.
+        create_collection(repo)
 
         _vector_stores[repo] = QdrantVectorStore(
             client=client,
@@ -118,23 +117,13 @@ def create_store_from_documents(documents, repo: str):
     if not documents:
         return
 
-    create_collection(repo)
-
-    collection_name = get_collection_name(repo)
-
-    vector_store = QdrantVectorStore(
-        client=client,
-        collection_name=collection_name,
-        embedding=get_embeddings(),
-    )
-
+    vector_store = get_vector_store(repo)
     vector_store.add_documents(documents=documents)
-    _vector_stores[repo] = vector_store
 
     logger.info(
         "Stored %s documents in %s",
         len(documents),
-        collection_name,
+        get_collection_name(repo),
     )
 
 
@@ -144,6 +133,7 @@ def add_documents(documents, repo: str):
         return
 
     vector_store = get_vector_store(repo)
+
     batch_size = 5
     max_attempts = 4
 
@@ -178,10 +168,12 @@ def add_documents(documents, repo: str):
                 delay = 30 * (2 ** attempt)
 
                 logger.warning(
-                    "Embedding rate limit for %s; retrying in %s seconds",
+                    "Embedding rate limit for %s. "
+                    "Retrying in %s seconds.",
                     repo,
                     delay,
                 )
+
                 time.sleep(delay)
 
         if start + batch_size < len(documents):
@@ -191,7 +183,7 @@ def add_documents(documents, repo: str):
 
 
 def _get_stored_path(payload: dict) -> str:
-    """Read file path from common Qdrant payload layouts."""
+    """Extract a file path from supported payload layouts."""
     metadata = payload.get("metadata") or {}
 
     if not isinstance(metadata, dict):
@@ -215,11 +207,10 @@ def _get_document_metadata(payload: dict) -> dict:
         metadata = {}
 
     metadata = dict(metadata)
+    stored_path = _get_stored_path(payload)
 
-    path = _get_stored_path(payload)
-
-    if path and not metadata.get("path"):
-        metadata["path"] = path
+    if stored_path and not metadata.get("path"):
+        metadata["path"] = stored_path
 
     return metadata
 
@@ -231,31 +222,11 @@ def delete_file_vectors(file_path: str, repo: str):
 
     collection_name = get_collection_name(repo)
     target_path = normalize_file_path(file_path)
-
-    # Fast path for the standard LangChain payload layout.
-    try:
-        client.delete(
-            collection_name=collection_name,
-            points_selector=Filter(
-                must=[
-                    FieldCondition(
-                        key="metadata.path",
-                        match=MatchValue(value=file_path),
-                    )
-                ]
-            ),
-        )
-    except Exception:
-        logger.warning(
-            "Exact-path deletion failed for %s; checking stored payloads",
-            file_path,
-            exc_info=True,
-        )
-
-    # Also handle payload layouts or separators that differ.
-    offset = None
     ids_to_delete = []
+    offset = None
 
+    # Scan payloads to handle path separators and metadata layouts
+    # consistently. This also avoids relying on one exact filter key.
     while True:
         points, next_offset = client.scroll(
             collection_name=collection_name,
@@ -267,7 +238,9 @@ def delete_file_vectors(file_path: str, repo: str):
 
         for point in points:
             payload = point.payload or {}
-            stored_path = normalize_file_path(_get_stored_path(payload))
+            stored_path = normalize_file_path(
+                _get_stored_path(payload)
+            )
 
             if (
                 stored_path == target_path
@@ -281,8 +254,6 @@ def delete_file_vectors(file_path: str, repo: str):
         offset = next_offset
 
     if ids_to_delete:
-        from qdrant_client.models import PointIdsList
-
         client.delete(
             collection_name=collection_name,
             points_selector=PointIdsList(points=ids_to_delete),
@@ -292,7 +263,8 @@ def delete_file_vectors(file_path: str, repo: str):
     _vector_stores.pop(repo, None)
 
     logger.info(
-        "Deleted matching vectors for %s from %s",
+        "Deleted %s vectors for %s from %s",
+        len(ids_to_delete),
         file_path,
         collection_name,
     )
@@ -303,13 +275,13 @@ def get_documents_by_file(
     repo: str,
     limit: int = 100,
 ):
-    """Retrieve chunks for a file using normalized path matching."""
+    """Retrieve chunks matching a normalized file path."""
     if not file_path:
         return []
 
     if not collection_exists(repo):
-        logger.error(
-            "Cannot retrieve file: collection missing for %s",
+        logger.warning(
+            "Exact retrieval skipped: collection missing for %s",
             repo,
         )
         return []
@@ -337,6 +309,7 @@ def get_documents_by_file(
 
         for point in points:
             payload = point.payload or {}
+
             stored_path = normalize_file_path(
                 _get_stored_path(payload)
             )
@@ -349,12 +322,11 @@ def get_documents_by_file(
             if not matches:
                 continue
 
-            # LangChain Qdrant payload normally stores page_content here.
             content = payload.get("page_content", "")
 
             if not content:
                 logger.warning(
-                    "Matched file path but payload has no page_content. "
+                    "Matching path has no page_content. "
                     "Payload keys: %s",
                     list(payload.keys()),
                 )
@@ -385,7 +357,7 @@ def get_documents_by_file(
 
 
 def get_retriever(repo: str, k: int = 8):
-    """Get the semantic retriever for an indexed repository."""
+    """Get a semantic retriever for an indexed repository."""
     vector_store = get_vector_store(repo)
 
     return vector_store.as_retriever(
@@ -403,7 +375,7 @@ def get_semantic_documents(
         return []
 
     if not collection_exists(repo):
-        logger.error(
+        logger.warning(
             "Semantic retrieval skipped: collection missing for %s",
             repo,
         )
@@ -421,6 +393,10 @@ def get_semantic_documents(
         )
 
         if not info.points_count:
+            logger.warning(
+                "Collection %s is empty",
+                collection_name,
+            )
             return []
 
         documents = get_retriever(repo, k).invoke(query)
@@ -441,7 +417,7 @@ def get_semantic_documents(
 
 
 def close_qdrant():
-    """Close the Qdrant client and clear cached objects."""
+    """Close Qdrant and clear cached objects."""
     global _embeddings
 
     try:
