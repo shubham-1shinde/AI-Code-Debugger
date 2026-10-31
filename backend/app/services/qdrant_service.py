@@ -54,6 +54,7 @@ _vector_stores = {}
 # ============================================================
 # GEMINI EMBEDDINGS
 # ============================================================
+#model="gemini-embedding-001",gemini-embedding-2
 
 def get_embeddings():
     global _embeddings
@@ -62,7 +63,7 @@ def get_embeddings():
         logger.info("Initializing Gemini embedding model")
 
         _embeddings = GoogleGenerativeAIEmbeddings(
-            model="gemini-embedding-001",
+            model=os.getenv("GEMINI_EMBEDDING_MODEL"),
             output_dimensionality=EMBEDDING_SIZE,
         )
 
