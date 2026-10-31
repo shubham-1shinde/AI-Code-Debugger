@@ -4,7 +4,8 @@ import re
 import time
 
 from pathlib import PurePosixPath
-
+import uuid
+from qdrant_client.models import PointStruct
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
@@ -532,6 +533,156 @@ def get_semantic_documents(
 
         raise
 
+# ============================================================
+# REPOSITORY INDEX METADATA COLLECTION
+# ============================================================
+
+def get_metadata_collection_name(repo: str) -> str:
+    """
+    Generate a separate metadata collection for each repository.
+
+    Example:
+    repo_shubham_1shinde_bizos
+    repo_shubham_1shinde_bizos_metadata
+    """
+
+    return f"{get_collection_name(repo)}_metadata"
+
+
+def ensure_metadata_collection(repo: str):
+    """Create the repository metadata collection if it doesn't exist."""
+
+    collection_name = get_metadata_collection_name(repo)
+
+    if client.collection_exists(collection_name):
+        return
+
+    logger.info(
+        "Creating metadata collection: %s",
+        collection_name,
+    )
+
+    client.create_collection(
+        collection_name=collection_name,
+        vectors_config=VectorParams(
+            size=1,
+            distance=Distance.DOT,
+        ),
+    )
+
+    logger.info(
+        "Metadata collection created: %s",
+        collection_name,
+    )
+
+
+def get_metadata_point_id(repo: str, branch: str) -> str:
+    """
+    Generate a deterministic point ID.
+
+    One metadata record per repository and branch.
+    """
+
+    key = f"{repo.lower()}::{branch}"
+
+    return str(
+        uuid.uuid5(uuid.NAMESPACE_URL, key)
+    )
+
+
+def load_repo_metadata(repo: str, branch: str):
+    """
+    Load index metadata from the repository's Qdrant
+    metadata collection.
+
+    Returns the same dictionary structure as index_metadata.json.
+    """
+
+    ensure_metadata_collection(repo)
+
+    collection_name = get_metadata_collection_name(repo)
+
+    point_id = get_metadata_point_id(repo, branch)
+
+    points = client.retrieve(
+        collection_name=collection_name,
+        ids=[point_id],
+        with_payload=True,
+        with_vectors=False,
+    )
+
+    if not points:
+        logger.info(
+            "No previous index metadata found for %s (%s)",
+            repo,
+            branch,
+        )
+
+        return None
+
+    metadata = (points[0].payload or {}).get("metadata")
+
+    if not isinstance(metadata, dict):
+        logger.warning(
+            "Invalid metadata payload for %s (%s)",
+            repo,
+            branch,
+        )
+
+        return None
+
+    logger.info(
+        "Loaded index metadata: repo=%s, branch=%s, commit=%s",
+        repo,
+        branch,
+        metadata.get("commit"),
+    )
+
+    return metadata
+
+
+def save_repo_metadata(metadata: dict):
+    """
+    Save or update repository indexing metadata.
+
+    Qdrant upsert replaces the existing metadata record
+    because the point ID is deterministic.
+    """
+
+    repo = metadata["repo"]
+    branch = metadata["branch"]
+
+    ensure_metadata_collection(repo)
+
+    collection_name = get_metadata_collection_name(repo)
+
+    point_id = get_metadata_point_id(repo, branch)
+
+    client.upsert(
+        collection_name=collection_name,
+        points=[
+            PointStruct(
+                id=point_id,
+                vector=[0.0],
+                payload={
+                    "repo": repo,
+                    "branch": branch,
+                    "metadata": metadata,
+                },
+            )
+        ],
+        wait=True,
+    )
+
+    logger.info(
+        "Repository metadata updated successfully: "
+        "repo=%s, branch=%s, commit=%s, files=%s",
+        repo,
+        branch,
+        metadata.get("commit"),
+        len(metadata.get("files", {})),
+    )
+    
 
 # ============================================================
 # CONNECTION TEST

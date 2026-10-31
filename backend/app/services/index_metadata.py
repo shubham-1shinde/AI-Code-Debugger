@@ -1,30 +1,12 @@
-import json
-from pathlib import Path
+from app.services.qdrant_service import (
+    load_repo_metadata,
+    save_repo_metadata,
+)
 
-METADATA_FILE = Path(__file__).resolve().parents[2] / "index_metadata.json"
 
-def load_metadata():
-    if not METADATA_FILE.exists():
-        return {
-            "indexed": False,
-            "repo": None,
-            "branch": None,
-            "commit": None,
-            "files": {}
-        }
-    try:
-        with open(METADATA_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
+def load_metadata(repo: str, branch: str):
+    return load_repo_metadata(repo, branch)
 
-    except Exception:
-        return {
-            "indexed": False,
-            "repo": None,
-            "branch": None,
-            "commit": None,
-            "files": {}
-        }
 
-def save_metadata(metadata):
-    with open(METADATA_FILE, "w", encoding="utf-8") as file:
-        json.dump(metadata, file,indent=2)
+def save_metadata(metadata: dict):
+    return save_repo_metadata(metadata)
