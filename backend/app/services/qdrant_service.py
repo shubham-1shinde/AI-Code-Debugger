@@ -1,11 +1,14 @@
 import logging
+import os
 import re
 import time
-from pathlib import Path, PurePosixPath
+
+from pathlib import PurePosixPath
 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -15,22 +18,49 @@ from qdrant_client.models import (
 
 logger = logging.getLogger(__name__)
 
-QDRANT_PATH = str(
-    Path(__file__).resolve().parents[2] / "qdrant_data"
-)
+
+# ============================================================
+# QDRANT CLOUD CONFIGURATION
+# ============================================================
+
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+
 EMBEDDING_SIZE = 768
+
+if not QDRANT_URL or not QDRANT_API_KEY:
+    raise RuntimeError(
+        "Missing QDRANT_URL or QDRANT_API_KEY environment variables"
+    )
+
+# Connect to Qdrant Cloud instead of local storage
+client = QdrantClient(
+    url=QDRANT_URL,
+    api_key=QDRANT_API_KEY,
+    timeout=120,
+)
+
+logger.info("Qdrant Cloud client initialized")
+
+
+# ============================================================
+# GLOBAL VARIABLES
+# ============================================================
 
 _embeddings = None
 _vector_stores = {}
 
-client = QdrantClient(path=QDRANT_PATH)
 
-#model="gemini-embedding-2",
+# ============================================================
+# GEMINI EMBEDDINGS
+# ============================================================
+
 def get_embeddings():
     global _embeddings
 
     if _embeddings is None:
         logger.info("Initializing Gemini embedding model")
+
         _embeddings = GoogleGenerativeAIEmbeddings(
             model="gemini-embedding-001",
             output_dimensionality=EMBEDDING_SIZE,
@@ -39,8 +69,14 @@ def get_embeddings():
     return _embeddings
 
 
+# ============================================================
+# FILE PATH NORMALIZATION
+# ============================================================
+
 def normalize_file_path(path: str) -> str:
+
     path = str(path or "").replace("\\", "/").strip()
+
     path = str(PurePosixPath(path))
 
     while path.startswith("./"):
@@ -49,13 +85,25 @@ def normalize_file_path(path: str) -> str:
     return path.strip("/")
 
 
+# ============================================================
+# COLLECTION MANAGEMENT
+# ============================================================
+
 def get_collection_name(repo: str) -> str:
-    safe_repo = re.sub(r"[^a-zA-Z0-9_]", "_", repo)
+
+    safe_repo = re.sub(
+        r"[^a-zA-Z0-9_]",
+        "_",
+        repo
+    )
+
     return f"repo_{safe_repo.lower()}"
 
 
 def collection_exists(repo: str) -> bool:
+
     name = get_collection_name(repo)
+
     return any(
         item.name == name
         for item in client.get_collections().collections
@@ -63,12 +111,13 @@ def collection_exists(repo: str) -> bool:
 
 
 def create_collection(repo: str):
+
     name = get_collection_name(repo)
 
     if collection_exists(repo):
         return
 
-    logger.info("Creating Qdrant collection: %s", name)
+    logger.info("Creating Qdrant Cloud collection: %s", name)
 
     client.create_collection(
         collection_name=name,
@@ -79,9 +128,18 @@ def create_collection(repo: str):
     )
 
 
+# ============================================================
+# VECTOR STORE
+# ============================================================
+
 def get_vector_store(repo: str):
-    """Create the collection before constructing the vector store."""
+    """
+    Create or retrieve the LangChain vector store
+    connected to Qdrant Cloud.
+    """
+
     if repo not in _vector_stores:
+
         create_collection(repo)
 
         _vector_stores[repo] = QdrantVectorStore(
@@ -93,11 +151,18 @@ def get_vector_store(repo: str):
     return _vector_stores[repo]
 
 
+# ============================================================
+# CREATE STORE FROM DOCUMENTS
+# ============================================================
+
 def create_store_from_documents(documents, repo: str):
+
     if not documents:
         return
 
-    get_vector_store(repo).add_documents(documents=documents)
+    vector_store = get_vector_store(repo)
+
+    vector_store.add_documents(documents=documents)
 
     logger.info(
         "Stored %s documents in %s",
@@ -106,7 +171,12 @@ def create_store_from_documents(documents, repo: str):
     )
 
 
+# ============================================================
+# TRANSIENT ERROR DETECTION
+# ============================================================
+
 def _is_transient_error(exc: Exception) -> bool:
+
     message = str(exc).upper()
 
     return any(
@@ -122,12 +192,21 @@ def _is_transient_error(exc: Exception) -> bool:
             "INTERNAL",
             "DEADLINE_EXCEEDED",
             "TIMEOUT",
+            "CONNECTION",
         )
     )
 
 
+# ============================================================
+# ADD DOCUMENTS WITH RETRIES
+# ============================================================
+
 def add_documents(documents, repo: str):
-    """Insert documents with retries for transient embedding failures."""
+    """
+    Insert documents in batches with retry handling
+    for temporary Gemini API and connection failures.
+    """
+
     if not documents:
         return
 
@@ -137,36 +216,46 @@ def add_documents(documents, repo: str):
     max_attempts = 5
 
     for start in range(0, len(documents), batch_size):
+
         batch = documents[start:start + batch_size]
+
         batch_number = start // batch_size + 1
 
         for attempt in range(max_attempts):
+
             try:
-                vector_store.add_documents(documents=batch)
+
+                vector_store.add_documents(
+                    documents=batch
+                )
 
                 logger.info(
                     "Embedded batch %s for %s",
                     batch_number,
                     repo,
                 )
+
                 break
 
             except Exception as exc:
+
                 if (
                     not _is_transient_error(exc)
                     or attempt == max_attempts - 1
                 ):
+
                     logger.exception(
                         "Embedding batch %s failed for %s",
                         batch_number,
                         repo,
                     )
+
                     raise
 
                 delay = min(15 * (2 ** attempt), 120)
 
                 logger.warning(
-                    "Temporary Gemini API failure. "
+                    "Temporary Gemini/Qdrant failure. "
                     "Repository=%s, batch=%s, attempt=%s/%s, "
                     "retry_in=%ss, error=%s",
                     repo,
@@ -182,10 +271,15 @@ def add_documents(documents, repo: str):
         if start + batch_size < len(documents):
             time.sleep(3)
 
-    logger.info("Qdrant update completed for %s", repo)
+    logger.info("Qdrant Cloud update completed for %s", repo)
 
+
+# ============================================================
+# DOCUMENT METADATA HELPERS
+# ============================================================
 
 def _get_stored_path(payload: dict) -> str:
+
     metadata = payload.get("metadata") or {}
 
     if not isinstance(metadata, dict):
@@ -202,12 +296,14 @@ def _get_stored_path(payload: dict) -> str:
 
 
 def _get_document_metadata(payload: dict) -> dict:
+
     metadata = payload.get("metadata") or {}
 
     if not isinstance(metadata, dict):
         metadata = {}
 
     metadata = dict(metadata)
+
     path = _get_stored_path(payload)
 
     if path and not metadata.get("path"):
@@ -216,16 +312,31 @@ def _get_document_metadata(payload: dict) -> dict:
     return metadata
 
 
+# ============================================================
+# DELETE FILE VECTORS
+# ============================================================
+
 def delete_file_vectors(file_path: str, repo: str):
+    """
+    Delete all vector chunks belonging to a specific file.
+    """
+
     if not collection_exists(repo):
         return
 
     name = get_collection_name(repo)
+
     target = normalize_file_path(file_path)
+
+    if not target:
+        return
+
     ids = []
+
     offset = None
 
     while True:
+
         points, next_offset = client.scroll(
             collection_name=name,
             limit=256,
@@ -235,7 +346,9 @@ def delete_file_vectors(file_path: str, repo: str):
         )
 
         for point in points:
+
             payload = point.payload or {}
+
             stored = normalize_file_path(
                 _get_stored_path(payload)
             )
@@ -244,6 +357,7 @@ def delete_file_vectors(file_path: str, repo: str):
                 stored == target
                 or stored.endswith("/" + target)
             ):
+
                 ids.append(point.id)
 
         if next_offset is None:
@@ -252,9 +366,12 @@ def delete_file_vectors(file_path: str, repo: str):
         offset = next_offset
 
     if ids:
+
         client.delete(
             collection_name=name,
-            points_selector=PointIdsList(points=ids),
+            points_selector=PointIdsList(
+                points=ids
+            ),
             wait=True,
         )
 
@@ -268,20 +385,32 @@ def delete_file_vectors(file_path: str, repo: str):
     )
 
 
+# ============================================================
+# GET DOCUMENTS BY FILE
+# ============================================================
+
 def get_documents_by_file(
     file_path: str,
     repo: str,
     limit: int = 100,
 ):
-    if not file_path or not collection_exists(repo):
+    """
+    Retrieve all stored chunks belonging to a file.
+    """
+
+    if not file_path or limit <= 0 or not collection_exists(repo):
         return []
 
     name = get_collection_name(repo)
+
     requested = normalize_file_path(file_path)
+
     documents = []
+
     offset = None
 
     while True:
+
         points, next_offset = client.scroll(
             collection_name=name,
             limit=256,
@@ -291,7 +420,9 @@ def get_documents_by_file(
         )
 
         for point in points:
+
             payload = point.payload or {}
+
             stored = normalize_file_path(
                 _get_stored_path(payload)
             )
@@ -305,11 +436,13 @@ def get_documents_by_file(
             content = payload.get("page_content", "")
 
             if not content:
+
                 logger.warning(
                     "Matched file but page_content is missing. "
                     "Payload keys: %s",
                     list(payload.keys()),
                 )
+
                 continue
 
             documents.append(
@@ -336,23 +469,39 @@ def get_documents_by_file(
     return documents
 
 
+# ============================================================
+# RETRIEVER
+# ============================================================
+
 def get_retriever(repo: str, k: int = 8):
+
     return get_vector_store(repo).as_retriever(
-        search_kwargs={"k": k}
+        search_kwargs={
+            "k": k
+        }
     )
 
+
+# ============================================================
+# SEMANTIC SEARCH
+# ============================================================
 
 def get_semantic_documents(
     query: str,
     repo: str,
     k: int = 8,
 ):
+    """
+    Perform semantic search against Qdrant Cloud.
+    """
+
     if not query or not collection_exists(repo):
         return []
 
     name = get_collection_name(repo)
 
     try:
+
         info = client.get_collection(name)
 
         logger.info(
@@ -374,20 +523,71 @@ def get_semantic_documents(
         return documents
 
     except Exception:
+
         logger.exception(
             "Semantic retrieval failed for repository %s",
             repo,
         )
+
         raise
 
+
+# ============================================================
+# CONNECTION TEST
+# ============================================================
+
+def test_qdrant_connection():
+
+    try:
+
+        collections = client.get_collections()
+
+        logger.info("Qdrant Cloud connected successfully!")
+
+        for collection in collections.collections:
+
+            logger.info(
+                "Available collection: %s",
+                collection.name,
+            )
+
+        return True
+
+    except Exception:
+
+        logger.exception("Qdrant Cloud connection failed")
+
+        return False
+
+
+# ============================================================
+# CLOSE CONNECTION
+# ============================================================
 
 def close_qdrant():
     global _embeddings
 
     try:
+
         client.close()
+
+        logger.info("Qdrant Cloud connection closed")
+
     except Exception:
+
         logger.exception("Error closing Qdrant client")
 
     _vector_stores.clear()
+
     _embeddings = None
+
+
+# ============================================================
+# LOCAL CONNECTION TEST
+# ============================================================
+
+if __name__ == "__main__":
+
+    logging.basicConfig(level=logging.INFO)
+
+    test_qdrant_connection()
