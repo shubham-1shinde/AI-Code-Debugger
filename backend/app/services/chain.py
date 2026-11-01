@@ -1,4 +1,5 @@
 import os
+import logging
 from functools import lru_cache
 from langchain_google_genai import ChatGoogleGenerativeAI
 from .prompts import prompt
@@ -7,6 +8,7 @@ from langchain_core.output_parsers import StrOutputParser
 from .qdrant_service import get_documents_by_file, get_semantic_documents
 from app.models.debug_models import DebugResult
 
+logger = logging.getLogger(__name__)
 
 def format_docs(documents):
     if not documents:
@@ -62,6 +64,12 @@ def retrieve_context(data):
     terminal_logs = data.get("terminalLogs", "")
     diagnostics = data.get("diagnostics", [])
     repo = data.get("repo", "")
+    
+    logger.info("========== RETRIEVAL INPUT ==========")
+    logger.info("Repository received by chain: %r", repo)
+    logger.info("Active file: %r", active_file)
+    logger.info("Semantic query length: %s", len(semantic_query))
+    logger.info("====================================")
 
     exact_documents = []
 

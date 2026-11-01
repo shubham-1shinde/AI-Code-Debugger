@@ -497,7 +497,13 @@ def get_semantic_documents(
     """
 
     if not query or not repo:
-        logger.warning("Semantic search skipped: empty query or repo")
+        logger.warning(
+            "Semantic search skipped | query_empty=%s | repo_empty=%s | repo=%r | query_length=%s",
+            not bool(query),
+            not bool(repo),
+            repo,
+            len(query or ""),
+        )
         return []
 
     name = get_collection_name(repo)

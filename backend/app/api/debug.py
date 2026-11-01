@@ -75,6 +75,7 @@ def debug(request: DebugRequest, http_request: Request):
                 else diagnostic
                 for diagnostic in (request.diagnostics or [])
             ],
+            "repo": request.repo,
         }
 
         logger.info("Debug chain input prepared.")
