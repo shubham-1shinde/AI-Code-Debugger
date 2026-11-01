@@ -476,11 +476,10 @@ def get_documents_by_file(
 # ============================================================
 
 def get_retriever(repo: str, k: int = 8):
+    vector_store = get_vector_store(repo)
 
-    return get_vector_store(repo).as_retriever(
-        search_kwargs={
-            "k": k
-        }
+    return vector_store.as_retriever(
+        search_kwargs={"k": k}
     )
 
 
@@ -497,24 +496,71 @@ def get_semantic_documents(
     Perform semantic search against Qdrant Cloud.
     """
 
-    if not query or not collection_exists(repo):
+    if not query or not repo:
+        logger.warning("Semantic search skipped: empty query or repo")
         return []
 
     name = get_collection_name(repo)
 
     try:
-
-        info = client.get_collection(name)
-
-        logger.info(
-            "Semantic search collection=%s, points_count=%s",
-            name,
-            info.points_count,
-        )
-
-        if not info.points_count:
+        if not collection_exists(repo):
+            logger.error("Qdrant collection does not exist: %s", name)
             return []
 
+        # Get collection information
+        info = client.get_collection(name)
+
+        # Verify actual number of stored points
+        count_result = client.count(
+            collection_name=name,
+            exact=True,
+        )
+
+        actual_count = count_result.count
+
+        logger.info("========== SEMANTIC SEARCH DIAGNOSTICS ==========")
+        logger.info("Repository: %s", repo)
+        logger.info("Collection: %s", name)
+        logger.info("Collection status: %s", info.status)
+        logger.info("Points reported by collection: %s", info.points_count)
+        logger.info("Exact Qdrant point count: %s", actual_count)
+        logger.info("Query length: %s characters", len(query))
+        logger.info("Requested top_k: %s", k)
+
+        if actual_count == 0:
+            logger.error(
+                "Qdrant collection is empty. Semantic search cannot retrieve documents."
+            )
+            return []
+
+        # Inspect a sample stored point
+        sample_points, _ = client.scroll(
+            collection_name=name,
+            limit=2,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        for index, point in enumerate(sample_points, 1):
+            payload = point.payload or {}
+
+            logger.info(
+                "QDRANT SAMPLE %s | ID=%s | PAYLOAD KEYS=%s",
+                index,
+                point.id,
+                list(payload.keys()),
+            )
+
+            metadata = payload.get("metadata") or {}
+
+            logger.info(
+                "QDRANT SAMPLE %s | PATH=%s | CONTENT LENGTH=%s",
+                index,
+                metadata.get("path") if isinstance(metadata, dict) else None,
+                len(payload.get("page_content", "")),
+            )
+
+        # Perform semantic retrieval
         documents = get_retriever(repo, k).invoke(query)
 
         logger.info(
@@ -522,15 +568,23 @@ def get_semantic_documents(
             len(documents),
         )
 
+        for index, doc in enumerate(documents, 1):
+            logger.info(
+                "SEMANTIC RESULT %s | PATH=%s | CONTENT LENGTH=%s",
+                index,
+                doc.metadata.get("path", "UNKNOWN"),
+                len(doc.page_content),
+            )
+
+        logger.info("========== END SEMANTIC DIAGNOSTICS ==========")
+
         return documents
 
     except Exception:
-
         logger.exception(
             "Semantic retrieval failed for repository %s",
             repo,
         )
-
         raise
 
 # ============================================================
