@@ -49,10 +49,10 @@ CODE:
 
     return "\n".join(formatted)
 
+
 def retrieve_context(data):
     """
     Retrieval pipeline:
-
     1. Exact active-file retrieval
     2. Semantic retrieval using error + active code
     3. Merge and deduplicate
@@ -64,18 +64,23 @@ def retrieve_context(data):
     terminal_logs = data.get("terminalLogs", "")
     diagnostics = data.get("diagnostics", [])
     repo = data.get("repo", "")
-    
+
+    # Log incoming data
     logger.info("========== RETRIEVAL INPUT ==========")
     logger.info("Repository received by chain: %r", repo)
     logger.info("Active file: %r", active_file)
-    logger.info("Semantic query length: %s", len(semantic_query))
-    logger.info("====================================")
+    logger.info("Active code length: %s", len(active_code))
+    logger.info("Error message length: %s", len(error_message))
+    logger.info("Terminal logs length: %s", len(terminal_logs))
+    logger.info("Diagnostics count: %s", len(diagnostics))
 
+    # 1. Exact retrieval
     exact_documents = []
 
-    if active_file:
-        exact_documents = (get_documents_by_file(active_file, repo))
+    if active_file and repo:
+        exact_documents = get_documents_by_file(active_file, repo)
 
+    # 2. Build semantic query BEFORE logging its length
     semantic_query = f"""
 ERROR:
 {error_message}
@@ -92,61 +97,44 @@ TERMINAL LOGS:
 DIAGNOSTICS:
 {diagnostics}
 """
-    semantic_documents = (
-        get_semantic_documents(
-            semantic_query,
-            repo,
-            k=8
-        )
+
+    logger.info("Semantic query length: %s", len(semantic_query))
+
+    # 3. Semantic retrieval
+    semantic_documents = get_semantic_documents(
+        semantic_query,
+        repo,
+        k=8,
     )
 
-
+    # 4. Merge and deduplicate
     combined_documents = []
     seen = set()
 
-    for doc in exact_documents:
-
+    for doc in exact_documents + semantic_documents:
         key = (
             doc.metadata.get("path", ""),
-            doc.page_content
+            doc.page_content,
         )
 
         if key not in seen:
             seen.add(key)
             combined_documents.append(doc)
 
-    for doc in semantic_documents:
-
-        key = (
-            doc.metadata.get("path", ""),
-            doc.page_content
-        )
-
-        if key not in seen:
-            seen.add(key)
-            combined_documents.append(doc)
-
-    print("\nRETRIEVAL")
-    print(f"Active file: {active_file}")
-    print(f"Exact chunks: {len(exact_documents)}")
-    print(f"Semantic chunks: {len(semantic_documents)}")
-    print(f"Final chunks: {len(combined_documents)}")
+    logger.info("========== RETRIEVAL RESULTS ==========")
+    logger.info("Exact chunks: %s", len(exact_documents))
+    logger.info("Semantic chunks: %s", len(semantic_documents))
+    logger.info("Final chunks: %s", len(combined_documents))
+    logger.info("======================================")
 
     return {
-        "repository_context":
-            format_docs(combined_documents),
-        "errorMessage":
-            error_message,
-        "activeFile":
-            active_file,
-        "activeCode":
-            active_code,
-        "terminalLogs":
-            terminal_logs,
-        "diagnostics":
-            diagnostics,
-        "repo":
-            repo,
+        "repository_context": format_docs(combined_documents),
+        "errorMessage": error_message,
+        "activeFile": active_file,
+        "activeCode": active_code,
+        "terminalLogs": terminal_logs,
+        "diagnostics": diagnostics,
+        "repo": repo,
     }
     
 #model="gemini-3.8-flash","gemini-2.5-flash"
