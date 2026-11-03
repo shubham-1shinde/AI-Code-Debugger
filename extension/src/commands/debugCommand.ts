@@ -6,7 +6,7 @@ import { getTerminalLogs } from "../services/terminalService";
 import { sendDebugRequest, DebugResult } from "../services/backendService";
 
 
-export async function runDebugCommand() {
+export async function runDebugCommand(context: vscode.ExtensionContext) {
 
     try {
         await vscode.window.withProgress(
@@ -55,7 +55,7 @@ export async function runDebugCommand() {
                     );
                 }
 
-                showDebugResult(result.answer);
+                showDebugResult(result.answer, context);
             }
         );
 
@@ -66,7 +66,10 @@ export async function runDebugCommand() {
 }
 
 
-function showDebugResult(result: DebugResult) {
+function showDebugResult(
+    result: DebugResult,
+    context: vscode.ExtensionContext
+) {
 
     const panel = vscode.window.createWebviewPanel(
         "aiDebuggerResult",
@@ -75,6 +78,14 @@ function showDebugResult(result: DebugResult) {
         {
             enableScripts: true
         }
+    );
+
+    const logoUri = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(
+            context.extensionUri,
+            "images",
+            "logo.png"
+        )
     );
 
     panel.webview.html = `
@@ -129,11 +140,16 @@ function showDebugResult(result: DebugResult) {
             align-items: center;
             justify-content: center;
             border-radius: 10px;
-            font-size: 20px;
             background: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
+            overflow: hidden;
         }
 
+        .logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            padding: 5px;
+        }
 
         .title {
             font-size: 16px;
@@ -471,7 +487,7 @@ function showDebugResult(result: DebugResult) {
     <header class="header">
         <div class="brand">
             <div class="logo">
-                🐞
+                <img src="${logoUri}" alt="AI Debugger Logo">
             </div>
 
             <div>
@@ -510,7 +526,7 @@ function showDebugResult(result: DebugResult) {
                 </div>
 
                 <div class="summary-value">
-                    ✓ Investigation completed
+                    Investigation completed
                 </div>
             </div>
 
@@ -530,16 +546,13 @@ function showDebugResult(result: DebugResult) {
                 </div>
 
                 <div class="summary-value">
-                    Gemini + RAG
+                    Gemini
                 </div>
             </div>
         </div>
 
         <section class="section">
             <div class="section-header">
-                <div class="section-icon">
-                    ⚠
-                </div>
 
                 <div class="section-title">
                     Error Detected
@@ -557,9 +570,6 @@ function showDebugResult(result: DebugResult) {
 
         <section class="section">
             <div class="section-header">
-                <div class="section-icon">
-                    🎯
-                </div>
 
                 <div class="section-title">
                     Root Cause
@@ -575,9 +585,6 @@ function showDebugResult(result: DebugResult) {
 
         <section class="section">
             <div class="section-header">
-                <div class="section-icon">
-                    🔎
-                </div>
 
                 <div class="section-title">
                     AI Investigation
@@ -595,9 +602,6 @@ function showDebugResult(result: DebugResult) {
 
         <section class="section">
             <div class="section-header">
-                <div class="section-icon">
-                    🛠
-                </div>
 
                 <div class="section-title">
                     Recommended Fix
@@ -611,9 +615,6 @@ function showDebugResult(result: DebugResult) {
 
         <section class="section">
             <div class="section-header">
-                <div class="section-icon">
-                    ✓
-                </div>
 
                 <div class="section-title">
                     Verification

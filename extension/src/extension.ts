@@ -8,7 +8,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     const debugCommand = vscode.commands.registerCommand(
         "aiCodeDebugger.debug",
-        runDebugCommand
+         () => runDebugCommand(context)
     );
 
     context.subscriptions.push(debugCommand);
